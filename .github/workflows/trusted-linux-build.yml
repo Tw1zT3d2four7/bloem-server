@@ -26,7 +26,7 @@ jobs:
   build:
     # A PR cannot turn this publisher into a privileged PR-code build.
     if: >-
-      github.repository == 'Silo-Server/silo-server' &&
+      github.repository == 'Tw1zT3d2four7/bloem-server' &&
       contains(fromJSON('["linux/amd64","linux/arm64"]'), inputs.platform) &&
       ((github.event_name == 'workflow_dispatch' &&
         contains(fromJSON('["refs/heads/main","refs/heads/apiv2"]'), github.ref)) ||
