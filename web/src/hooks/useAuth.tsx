@@ -30,6 +30,7 @@ import {
 } from "@/api/client";
 import { endProfileEpoch, storage } from "@/utils/storage";
 import { isProfileLaunchPending } from "@/lib/profileLaunch";
+import { randomUUID } from "@/lib/uuid";
 import type { LoginResponse, Profile, User } from "@/api/types";
 import { v2, V2ProblemError, type V2Result } from "@/api/v2/request";
 import { listProfiles, verifyProfilePIN, type ProfileVerification } from "@/hooks/queries/profiles";
@@ -795,7 +796,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const setupInitialUser = useCallback(
     async (username: string, email: string, password: string) => {
       const tokens = await v2("POST /api/v2/auth/setup", {
-        headers: { "Idempotency-Key": crypto.randomUUID() },
+        headers: { "Idempotency-Key": randomUUID() },
         body: { username, email, password, create_default_profile: true },
       });
       const session = sessionFromTokenPair(tokens);
@@ -815,7 +816,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const signup = useCallback(
     async (username: string, email: string, password: string, inviteCode: string) => {
       const tokens = await v2("POST /api/v2/auth/signup", {
-        headers: { "Idempotency-Key": crypto.randomUUID() },
+        headers: { "Idempotency-Key": randomUUID() },
         body: { username, email, password, invite_code: inviteCode, create_default_profile: true },
       });
       applyAuthenticatedUser(sessionFromTokenPair(tokens));
