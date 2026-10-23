@@ -1,141 +1,89 @@
-name: Docker Image
+name: Build and Publish Docker Image
 
 on:
-  workflow_run:
-    workflows: [CI]
-    types: [completed]
-    branches: [main, apiv2]
+  push:
+    branches:
+      - main
+      - apiv2
   workflow_dispatch:
 
+permissions:
+  contents: read
+  packages: write
+
 concurrency:
-  group: docker-${{ github.event.workflow_run.head_branch || github.ref_name }}
+  group: docker-image-${{ github.ref }}
   cancel-in-progress: true
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
-  # Published build numbers belong to this workflow. Keep it as the sole owner
-  # of the sequence; raise the offset if the workflow counter ever loses
-  # continuity so a new build remains greater than every existing build tag.
-  BUILD_NUMBER_OFFSET: 0
-  GOPROXY: https://proxy.golang.org,direct
-  GOPRIVATE: github.com/Silo-Server/*
-  GONOSUMDB: github.com/Silo-Server/*
 
 jobs:
-  prepare:
-    name: Prepare build identity
+  build:
+    name: Build and Publish Image
     runs-on: ubuntu-24.04
-    permissions: {}
-    outputs:
-      build_number: ${{ steps.identity.outputs.build_number }}
-      built_at: ${{ steps.identity.outputs.built_at }}
-      image_version: ${{ steps.identity.outputs.image_version }}
-    if: >-
-      (github.event_name == 'workflow_dispatch' &&
-       contains(fromJSON('["refs/heads/main","refs/heads/apiv2"]'), github.ref)) ||
-      (github.event_name == 'workflow_run' &&
-       github.event.workflow_run.conclusion == 'success' &&
-       github.event.workflow_run.event == 'push' &&
-       github.event.workflow_run.head_repository.full_name == github.repository &&
-       contains(fromJSON('["main","apiv2"]'), github.event.workflow_run.head_branch))
-    steps:
-      - name: Resolve build identity
-        id: identity
-        shell: bash
-        env:
-          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-          TARGET_BRANCH: ${{ github.event.workflow_run.head_branch || github.ref_name }}
-        run: |
-          if [[ -z "$DEFAULT_BRANCH" ]]; then
-            echo "::error::Repository default branch is unavailable."
-            exit 1
-          fi
+    timeout-minutes: 120
 
-          build_number=""
-          image_version="${GITHUB_SHA::7}"
-          if [[ "$TARGET_BRANCH" == "$DEFAULT_BRANCH" ]]; then
-            build_number=$((GITHUB_RUN_NUMBER + BUILD_NUMBER_OFFSET))
-            if (( build_number <= 0 )); then
-              echo "::error::Build number must be positive."
-              exit 1
-            fi
-            image_version="build-${build_number}"
-          fi
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Prepare image metadata
+        id: meta
+        shell: bash
+        run: |
+          IMAGE="ghcr.io/${GITHUB_REPOSITORY,,}"
+          SHORT_SHA="${GITHUB_SHA::12}"
 
           {
-            echo "build_number=${build_number}"
-            echo "built_at=$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
-            echo "image_version=${image_version}"
+            echo "image=$IMAGE"
+            echo "sha_tag=$IMAGE:sha-$SHORT_SHA"
           } >> "$GITHUB_OUTPUT"
 
-  build:
-    needs: [prepare]
-    strategy:
-      fail-fast: false
-      matrix:
-        platform: [linux/amd64, linux/arm64]
-    permissions:
-      contents: read
-      actions: read
-      packages: write
-    uses: Silo-Server/silo-server/.github/workflows/trusted-linux-build.yml@main
-    with:
-      platform: ${{ matrix.platform }}
-      build_number: ${{ needs.prepare.outputs.build_number }}
-      built_at: ${{ needs.prepare.outputs.built_at }}
-      image_version: ${{ needs.prepare.outputs.image_version }}
+          {
+            echo "tags<<EOF"
+            echo "$IMAGE:sha-$SHORT_SHA"
 
-  merge:
-    runs-on: ubuntu-24.04
-    needs: [prepare, build]
-    if: "!cancelled() && needs.prepare.result == 'success' && needs.build.result == 'success'"
-    permissions:
-      packages: write
+            if [[ "$GITHUB_REF_NAME" == "main" ]]; then
+              echo "$IMAGE:latest"
+            elif [[ "$GITHUB_REF_NAME" == "apiv2" ]]; then
+              echo "$IMAGE:apiv2"
+            else
+              BRANCH_TAG="$(echo "$GITHUB_REF_NAME" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9_.-]/-/g')"
+              echo "$IMAGE:$BRANCH_TAG"
+            fi
 
-    steps:
-      - name: Prepare lowercase image name
-        run: echo "IMAGE_LC=${IMAGE_NAME,,}" >> "$GITHUB_ENV"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
 
-      - name: Download digests
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          path: ${{ runner.temp }}/digests
-          pattern: digests-*
-          merge-multiple: true
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
       - name: Log in to GitHub Container Registry
-        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        uses: docker/login-action@v3
         with:
-          registry: ${{ env.REGISTRY }}
+          registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract metadata
-        id: meta
-        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+      - name: Build and publish Docker image
+        uses: docker/build-push-action@v6
         with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_LC }}
-          tags: |
-            type=raw,value=latest,enable=${{ github.event.workflow_run.head_branch == github.event.repository.default_branch || (github.event_name == 'workflow_dispatch' && github.ref_name == github.event.repository.default_branch) }}
-            type=raw,value=build-${{ needs.prepare.outputs.build_number }},enable=${{ github.event.workflow_run.head_branch == github.event.repository.default_branch || (github.event_name == 'workflow_dispatch' && github.ref_name == github.event.repository.default_branch) }}
-            type=raw,value=apiv2,enable=${{ github.event.workflow_run.head_branch == 'apiv2' || (github.event_name == 'workflow_dispatch' && github.ref_name == 'apiv2') }}
-            type=raw,value=${{ (github.event.workflow_run.head_sha || github.sha) }}
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          build-args: |
+            BUILD_REVISION=${{ github.sha }}
+            BUILD_DIRTY=false
+            BUILD_DATE=${{ github.event.head_commit.timestamp }}
 
-      - name: Create and push manifest list
-        working-directory: ${{ runner.temp }}/digests
+      - name: Verify published image
+        shell: bash
         run: |
-          # shellcheck disable=SC2046
-          docker buildx imagetools create \
-            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
-            $(printf "${REGISTRY}/${IMAGE_LC}@sha256:%s " *)
-
-      - name: Inspect manifest list
-        env:
-          BUILD_NUMBER: ${{ needs.prepare.outputs.build_number }}
-          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-        run: |
-          docker buildx imagetools inspect "${REGISTRY}/${IMAGE_LC}:${{ github.event.workflow_run.head_sha || github.sha }}"
-          if [[ "${GITHUB_REF_NAME}" == "${DEFAULT_BRANCH}" || "${{ github.event.workflow_run.head_branch }}" == "${DEFAULT_BRANCH}" ]]; then
-            docker buildx imagetools inspect "${REGISTRY}/${IMAGE_LC}:build-${BUILD_NUMBER}"
-          fi
+          docker buildx imagetools inspect "${{ steps.meta.outputs.sha_tag }}"
