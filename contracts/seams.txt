@@ -10,6 +10,8 @@
 #
 # Seeded 2026-09-13 from the pre-restructuring state.
 .github/workflows/ci.yml
+.github/workflows/docker.yml # Bloem GHCR publisher calls the fork-local trusted multi-arch build workflow
+.github/workflows/trusted-linux-build.yml # allowlisted Bloem repository guard for its own image publisher; preserve CI and branch restrictions
 .gitignore
 .golangci.yml
 AGENTS.md
